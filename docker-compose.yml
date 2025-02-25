@@ -1,0 +1,96 @@
+version: '3'
+
+services:
+  # ZooKeeper service
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka broker service
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI API Handler service
+  api_handler:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: api_handler
+    ports:
+      - "5000:5000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      INCOMING_TOPIC: user_data_topic
+      PROCESSED_TOPIC: processed_data_topic
+      PORT: 5000
+    restart: on-failure
+
+  # Processing Service
+  service_1:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    container_name: service_1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      INCOMING_TOPIC: user_data_topic
+      PROCESSED_TOPIC: processed_data_topic
+      PROCESSING_TIME_MS: 10
+    restart: on-failure
+
+  # Kafka initialization service - creates required topics
+  kafka_setup:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka_setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c "
+        echo 'Waiting for Kafka to be ready...' &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic user_data_topic --partitions 3 --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic processed_data_topic --partitions 3 --replication-factor 1 &&
+        echo 'Kafka topics created successfully'"
+    restart: "no"
+
+networks:
+  default:
+    name: kafka_network

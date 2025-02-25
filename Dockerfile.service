@@ -1,0 +1,18 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.service.txt .
+RUN pip install --no-cache-dir -r requirements.service.txt
+
+# Copy source code
+COPY service_1.py .
+
+# Environment variables with defaults (can be overridden)
+ENV KAFKA_BOOTSTRAP_SERVERS=kafka:9092 \
+    INCOMING_TOPIC=user_data_topic \
+    PROCESSED_TOPIC=processed_data_topic
+
+# Start service
+CMD ["python", "service_1.py"]
