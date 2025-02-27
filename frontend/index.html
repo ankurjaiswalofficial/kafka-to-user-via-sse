@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Kafka SSE Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .form-container {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .results-container {
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .result-item {
+            padding: 10px;
+            margin: 5px 0;
+            background-color: #f9f9f9;
+            border-radius: 3px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        input, button {
+            padding: 8px;
+            margin: 5px 0;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-time Kafka SSE Demo</h1>
+    
+    <div id="connectionStatus" class="status disconnected">
+        Connecting to server...
+    </div>
+    
+    <div class="form-container">
+        <h2>Submit Data</h2>
+        <form id="dataForm">
+            <div>
+                <label for="userId">User ID:</label>
+                <input type="text" id="userId" required>
+            </div>
+            <div>
+                <label for="userData">User Data:</label>
+                <input type="text" id="userData" required>
+            </div>
+            <button type="submit">Submit Data</button>
+        </form>
+    </div>
+    
+    <div class="results-container">
+        <h2>Processed Results</h2>
+        <div id="resultsArea"></div>
+    </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('dataForm');
+            const resultsArea = document.getElementById('resultsArea');
+            const connectionStatus = document.getElementById('connectionStatus');
+            
+            let eventSource;
+            let reconnectAttempts = 0;
+            const maxReconnectAttempts = 5;
+            
+            // Function to setup SSE connection
+            function connectEventSource() {
+                // Close any existing connection
+                if (eventSource) {
+                    eventSource.close();
+                }
+                
+                connectionStatus.textContent = 'Connecting to server...';
+                connectionStatus.className = 'status disconnected';
+                
+                eventSource = new EventSource('http://localhost:5000/api/stream');
+                
+                eventSource.onopen = function() {
+                    connectionStatus.textContent = 'Connected to server';
+                    connectionStatus.className = 'status connected';
+                    reconnectAttempts = 0;
+                };
+                
+                eventSource.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    
+                    // Handle the connected message
+                    if (data.connected) {
+                        connectionStatus.textContent = 'Connected to server';
+                        connectionStatus.className = 'status connected';
+                        return;
+                    }
+                    
+                    // Ignore heartbeat messages
+                    if (data.heartbeat) return;
+                    
+                    // Calculate processing latency
+                    let latency = '';
+                    if (data.timestamp_processing_end && data.timestamp_received) {
+                        latency = ((data.timestamp_processing_end - data.timestamp_received) * 1000).toFixed(2) + 'ms';
+                    }
+                    
+                    // Create result element
+                    const resultItem = document.createElement('div');
+                    resultItem.className = 'result-item';
+                    resultItem.innerHTML = `
+                        <strong>User ID:</strong> ${data.user_id || 'N/A'}<br>
+                        <strong>Data:</strong> ${data.user_data || 'N/A'}<br>
+                        <strong>Result:</strong> ${data.processing_result || 'N/A'}<br>
+                        <strong>Total Latency:</strong> ${latency}<br>
+                        <strong>Request ID:</strong> ${data.request_id || 'N/A'}<br>
+                        <strong>Timestamp:</strong> ${new Date().toLocaleTimeString()}
+                    `;
+                    
+                    resultsArea.prepend(resultItem);
+                };
+                
+                eventSource.onerror = function(error) {
+                    console.error('SSE Error:', error);
+                    connectionStatus.textContent = 'Disconnected. Attempting to reconnect...';
+                    connectionStatus.className = 'status disconnected';
+                    
+                    // Close the current connection
+                    eventSource.close();
+                    
+                    // Try to reconnect with exponential backoff
+                    reconnectAttempts++;
+                    if (reconnectAttempts <= maxReconnectAttempts) {
+                        const timeout = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+                        console.log(`Reconnecting in ${timeout/1000} seconds...`);
+                        setTimeout(connectEventSource, timeout);
+                    } else {
+                        connectionStatus.textContent = 'Failed to connect after multiple attempts. Please refresh the page.';
+                    }
+                };
+            }
+            
+            // Initial connection
+            connectEventSource();
+            
+            // Form submission
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const userId = document.getElementById('userId').value;
+                const userData = document.getElementById('userData').value;
+                
+                // Send data to API
+                fetch('http://localhost:5000/api/data', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: userId,
+                        user_data: userData,
+                        client_timestamp: Date.now() / 1000
+                    })
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Success:', data);
+                    // Add a temporary message showing the request was sent
+                    const tempItem = document.createElement('div');
+                    tempItem.className = 'result-item';
+                    tempItem.style.backgroundColor = '#e6f7ff';
+                    tempItem.innerHTML = `
+                        <strong>Request Sent:</strong> ${userId}<br>
+                        <strong>Data:</strong> ${userData}<br>
+                        <strong>Request ID:</strong> ${data.request_id || 'N/A'}<br>
+                        <strong>Status:</strong> ${data.status}<br>
+                        <strong>Waiting for processing...</strong>
+                    `;
+                    resultsArea.prepend(tempItem);
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    const errorItem = document.createElement('div');
+                    errorItem.className = 'result-item';
+                    errorItem.style.backgroundColor = '#f8d7da';
+                    errorItem.innerHTML = `
+                        <strong>Error:</strong> Failed to send data<br>
+                        <strong>Details:</strong> ${error.message}
+                    `;
+                    resultsArea.prepend(errorItem);
+                });
+                
+                // Clear the form
+                document.getElementById('userData').value = '';
+            });
+        });
+    </script>
+</body>
+</html>
